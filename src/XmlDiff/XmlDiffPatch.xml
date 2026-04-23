@@ -255,6 +255,11 @@
             Construct empty XmlPatch object.
             </summary>
         </member>
+        <member name="P:Microsoft.XmlDiffPatch.XmlPatch.IgnoreSrcValidation">
+            <summary>
+               If true, the patch operation skips validation of the diffgram source hash.
+            </summary>
+        </member>
         <member name="M:Microsoft.XmlDiffPatch.XmlPatch.Patch(System.Xml.XmlDocument,System.Xml.XmlReader)">
             <summary>
                Reads the XDL diffgram from the diffgramFileName and modifies the original XML document
