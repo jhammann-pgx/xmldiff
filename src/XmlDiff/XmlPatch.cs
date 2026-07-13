@@ -527,6 +527,17 @@ public class XmlPatch
                     return matchNodes;   // hash matches -> type and name are implicitly verified
 
                 XmlNode reanchoredNode = FindNodeByHash( matchNode, expectedHash );
+
+                if ( reanchoredNode == null && _ignoreSrcValidation && !NodeFitsTypeAndName( matchNode, diffOp ) )
+                {
+                    // Under IgnoreSrcValidation the node's content may legitimately differ, so a
+                    // changed node cannot be located by its hash. When the positional node does
+                    // not even fit the expected type and name - typically because text or other
+                    // nodes were inserted or reordered around it - fall back to the nearest
+                    // sibling that does.
+                    reanchoredNode = FindNodeByTypeAndName( matchNode, diffOp );
+                }
+
                 if ( reanchoredNode != null )
                 {
                     XmlPatchNodeList reanchoredList = new SingleNodeList();
@@ -572,6 +583,70 @@ public class XmlPatch
         {
             if ( child != mismatchedNode &&
                  _matchValidationHash.ComputeHash( child, _diffgramOptions ) == expectedHash )
+            {
+                int distance = ( index > originalIndex ) ? index - originalIndex : originalIndex - index;
+                if ( distance < bestDistance )
+                {
+                    bestDistance = distance;
+                    bestNode = child;
+                }
+            }
+            index++;
+            child = child.NextSibling;
+        }
+        return bestNode;
+    }
+
+    // True when the node fits the matchType/matchName attributes of the operation.
+    // Operations without type metadata fit trivially.
+    private static bool NodeFitsTypeAndName( XmlNode node, XmlElement diffOp )
+    {
+        string expectedTypeStr = diffOp.GetAttribute( "matchType" );
+        int expectedType;
+        if ( expectedTypeStr == string.Empty || !int.TryParse( expectedTypeStr, out expectedType ) )
+            return true;
+
+        if ( (int)node.NodeType != expectedType )
+            return false;
+
+        string expectedName = diffOp.GetAttribute( "matchName" );
+        if ( expectedName == string.Empty )
+            return true;
+
+        string actualName = ( node.NodeType == XmlNodeType.Element ) ? node.LocalName : node.Name;
+        return actualName == expectedName;
+    }
+
+    // Weaker re-anchoring used with IgnoreSrcValidation, where content differences are permitted
+    // and a changed node cannot be located by its hash: finds the sibling closest to the original
+    // position that fits the expected node type and name. Returns null when no sibling fits.
+    private XmlNode FindNodeByTypeAndName( XmlNode mismatchedNode, XmlElement diffOp )
+    {
+        XmlNode parent = mismatchedNode.ParentNode;
+        if ( parent == null )
+            return null;
+
+        int originalIndex = 0;
+        int index = 0;
+        XmlNode child = parent.FirstChild;
+        while ( child != null )
+        {
+            if ( child == mismatchedNode )
+            {
+                originalIndex = index;
+                break;
+            }
+            index++;
+            child = child.NextSibling;
+        }
+
+        XmlNode bestNode = null;
+        int bestDistance = int.MaxValue;
+        index = 0;
+        child = parent.FirstChild;
+        while ( child != null )
+        {
+            if ( child != mismatchedNode && NodeFitsTypeAndName( child, diffOp ) )
             {
                 int distance = ( index > originalIndex ) ? index - originalIndex : originalIndex - index;
                 if ( distance < bestDistance )

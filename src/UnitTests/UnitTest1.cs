@@ -353,6 +353,42 @@ namespace UnitTests
         }
 
         [Fact]
+        public void ReanchoringToleratesAddedTextAroundChangedInlineElement()
+        {
+            // The patched document has additional text before and after the inline element AND
+            // the element's content differs (typical for translated documents). The hash cannot
+            // locate the changed <b>, so under IgnoreSrcValidation the re-anchoring falls back
+            // to the nearest sibling with the expected type and name.
+            string diffgram = Diff(
+                "<p><b>alt</b></p>",
+                "<p><b>neu</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p>Vor<b>ALT</b>Nach</p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p>Vor<b>neu</b>Nach</p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringToleratesChangedContentOnReorderedInlineElement()
+        {
+            // The inline element moved to the front and both text nodes differ from the diff
+            // source; the nested change still finds the <b> element and applies inside it.
+            string diffgram = Diff(
+                "<p>Hallo<b>alt</b></p>",
+                "<p>Hallo<b>neu</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p><b>ALT</b>Uebersetzt</p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p><b>neu</b>Uebersetzt</p>", patched);
+        }
+
+        [Fact]
         public void ReanchoringFallsBackToValidationWhenNoCandidateExists()
         {
             // The expected <b> element does not exist anywhere in the patched document, so
