@@ -574,7 +574,7 @@ internal class DiffgramAddSubtrees : DiffgramOperation
             Sort();
 
         xmlWriter.WriteStartElement( XmlDiff.Prefix, "add", XmlDiff.NamespaceUri );
-        if ( _operationID != 0 ) 
+        if ( _operationID != 0 )
             xmlWriter.WriteAttributeString( "opid", _operationID.ToString() );
 
         // namespaces

@@ -421,20 +421,20 @@ public class XmlPatch
                             bool bElement = (nodeType == XmlNodeType.Element);
 
                             if ( nodeType != XmlNodeType.DocumentType ) {
-                                patchOp = new PatchAddNode( nodeType,  
-                                                            diffOp.GetAttribute( "name" ), 
-                                                            diffOp.GetAttribute( "ns" ), 
-                                                            diffOp.GetAttribute( "prefix" ), 
+                                patchOp = new PatchAddNode( nodeType,
+                                                            diffOp.GetAttribute( "name" ),
+                                                            diffOp.GetAttribute( "ns" ),
+                                                            diffOp.GetAttribute( "prefix" ),
                                                             bElement ? string.Empty : diffOp.InnerText,
                                                             _ignoreChildOrder );
                                 if ( bElement )
                                     CreatePatchForChildren( sourceParent, diffOp, (XmlPatchParentOperation) patchOp );
                             }
                             else {
-                                patchOp = new PatchAddNode( nodeType,  
-                                                            diffOp.GetAttribute( "name" ), 
-                                                            diffOp.GetAttribute( "systemId" ), 
-                                                            diffOp.GetAttribute( "publicId" ), 
+                                patchOp = new PatchAddNode( nodeType,
+                                                            diffOp.GetAttribute( "name" ),
+                                                            diffOp.GetAttribute( "systemId" ),
+                                                            diffOp.GetAttribute( "publicId" ),
                                                             diffOp.InnerText,
                                                             _ignoreChildOrder );
                             }

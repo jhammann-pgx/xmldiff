@@ -389,6 +389,42 @@ namespace UnitTests
         }
 
         [Fact]
+        public void ReanchoringToleratesAddedInlineElements()
+        {
+            // The patched document contains an additional inline element (<i>) that shifts all
+            // positions, plus extra text and changed content in the target <b>. The type+name
+            // fallback skips the foreign <i> and anchors on the <b>.
+            string diffgram = Diff(
+                "<p>Hallo<b>alt</b></p>",
+                "<p>Hallo<b>neu</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p>Start<i>zusatz</i><b>ALT</b>Ende</p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p>Start<i>zusatz</i><b>neu</b>Ende</p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringAppliesAttributeChangeOnRepositionedInlineElement()
+        {
+            // The core bloXedia pre-translation requirement: an attribute changed on an inline
+            // element that sits at position 1 in one document and position 2 in the other.
+            // Only the attribute is patched; the mixed content itself is not repositioned.
+            string diffgram = Diff(
+                "<p><g a='alt' />Text</p>",
+                "<p><g a='neu' />Text</p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p>Anderer Text<g a='alt' /></p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p>Anderer Text<g a=\"neu\" /></p>", patched);
+        }
+
+        [Fact]
         public void ReanchoringFallsBackToValidationWhenNoCandidateExists()
         {
             // The expected <b> element does not exist anywhere in the patched document, so

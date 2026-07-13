@@ -101,7 +101,7 @@ internal class PatchCopy : XmlPatchParentOperation
     bool _bSubtree;
 
 // Constructor
-    internal PatchCopy( XmlNodeList matchNodes, bool bSubtree ) 
+    internal PatchCopy( XmlNodeList matchNodes, bool bSubtree )
     {
         Debug.Assert( matchNodes != null );
         Debug.Assert( matchNodes.Count != 0 );
@@ -150,7 +150,7 @@ internal class PatchAddNode : XmlPatchParentOperation
     bool   _ignoreChildOrder;
 
 // Constructor
-    internal PatchAddNode( XmlNodeType nodeType, string name, string ns, string prefix, string value, bool ignoreChildOrder ) 
+    internal PatchAddNode( XmlNodeType nodeType, string name, string ns, string prefix, string value, bool ignoreChildOrder )
     {
         Debug.Assert( (int)nodeType > 0 && (int)nodeType <= (int)XmlNodeType.XmlDeclaration );
 
@@ -263,7 +263,7 @@ internal class PatchAddXmlFragment : XmlPatchOperation
     XmlNodeList _nodes;
 
 // Constructor
-    internal PatchAddXmlFragment( XmlNodeList nodes ) 
+    internal PatchAddXmlFragment( XmlNodeList nodes )
     {
         Debug.Assert( nodes != null );
         _nodes = nodes;
@@ -275,7 +275,7 @@ internal class PatchAddXmlFragment : XmlPatchOperation
         XmlDocument doc = parent.OwnerDocument;
 
         IEnumerator enumerator = _nodes.GetEnumerator();
-        while ( enumerator.MoveNext() ) 
+        while ( enumerator.MoveNext() )
         {
             XmlNode newNode = doc.ImportNode( (XmlNode)enumerator.Current, true );
             parent.InsertAfter( newNode, currentPosition );
