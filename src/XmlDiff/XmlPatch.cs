@@ -25,6 +25,7 @@ public class XmlPatch
 // Fields
     XmlNode _sourceRootNode;
     bool   _ignoreChildOrder;
+    bool   _ignoreSrcValidation;
 
     /// <summary>
     /// Construct empty XmlPatch object.
@@ -32,6 +33,15 @@ public class XmlPatch
 	public XmlPatch()
 	{
 	}
+
+    /// <summary>
+    ///    If true, the patch operation skips validation of the diffgram source hash.
+    /// </summary>
+    public bool IgnoreSrcValidation
+    {
+        get { return _ignoreSrcValidation; }
+        set { _ignoreSrcValidation = value; }
+    }
 
 // Methods
     /// <summary>
@@ -192,18 +202,6 @@ public class XmlPatch
             XmlPatchError.Error( XmlPatchError.ExpectingDiffgramElement );
 
         XmlNamedNodeMap diffgramAttributes = diffgramEl.Attributes;
-        XmlAttribute srcDocAttr = (XmlAttribute)diffgramAttributes.GetNamedItem( "srcDocHash" );
-        if ( srcDocAttr == null )
-            XmlPatchError.Error( XmlPatchError.MissingSrcDocAttribute );
-
-        ulong hashValue = 0;
-        try { 
-            hashValue = ulong.Parse( srcDocAttr.Value );
-        }
-        catch {
-            XmlPatchError.Error( XmlPatchError.InvalidSrcDocAttribute );
-        }
-
         XmlAttribute optionsAttr = (XmlAttribute) diffgramAttributes.GetNamedItem( "options" );
         if ( optionsAttr == null )
             XmlPatchError.Error( XmlPatchError.MissingOptionsAttribute );
@@ -219,10 +217,25 @@ public class XmlPatch
         
         _ignoreChildOrder = ( (int)xmlDiffOptions & (int)XmlDiffOptions.IgnoreChildOrder ) != 0;
 
-        // Calculate the hash value of source document and check if it agrees with
-        // of srcDocHash attribute value.
-        if ( !XmlDiff.VerifySource( sourceNode, hashValue, xmlDiffOptions ) )
-            XmlPatchError.Error( XmlPatchError.SrcDocMismatch );
+        if ( !_ignoreSrcValidation )
+        {
+            XmlAttribute srcDocAttr = (XmlAttribute)diffgramAttributes.GetNamedItem( "srcDocHash" );
+            if ( srcDocAttr == null )
+                XmlPatchError.Error( XmlPatchError.MissingSrcDocAttribute );
+
+            ulong hashValue = 0;
+            try {
+                hashValue = ulong.Parse( srcDocAttr.Value );
+            }
+            catch {
+                XmlPatchError.Error( XmlPatchError.InvalidSrcDocAttribute );
+            }
+
+            // Calculate the hash value of the source document and verify that it
+            // matches the srcDocHash value from the diffgram.
+            if ( !XmlDiff.VerifySource( sourceNode, hashValue, xmlDiffOptions ) )
+                XmlPatchError.Error( XmlPatchError.SrcDocMismatch );
+        }
 
         // Translate diffgram & Apply patch
         if ( sourceNode.NodeType == XmlNodeType.Document ) 

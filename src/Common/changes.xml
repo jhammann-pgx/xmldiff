@@ -9,6 +9,9 @@
     <history>https://github.com/microsoft/XmlNotepad/blob/master/src/Updates/Updates.xml</history>
     <frequency>1.00:00:00</frequency>
   </application>
+	<version number="1.2.0">
+		<feature>The SrcDocHash check in XmlPatch can now be disabled</feature>
+	</version>
   <version number="1.1.0">
     <feature>Thanks to Mark Roberts for a cool new feature that omits identical output to make the diff HTML output scale better on huge XML files.</feature>
   </version>

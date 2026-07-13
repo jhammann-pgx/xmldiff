@@ -119,6 +119,52 @@ namespace UnitTests
             }
         }
 
+        [Fact]
+        public void PatchCanIgnoreSourceValidation()
+        {
+            XmlDocument originalSource = new XmlDocument();
+            originalSource.LoadXml("<a></a>");
+
+            XmlDocument changedSource = new XmlDocument();
+            changedSource.LoadXml("<a><b/></a>");
+
+            XmlDiff diff = new XmlDiff();
+            string diffgram;
+            var settings = new XmlWriterSettings() { OmitXmlDeclaration = true, Indent = false };
+            using (var sw = new StringWriter())
+            {
+                using (var writer = XmlWriter.Create(sw, settings))
+                {
+                    Assert.False(diff.Compare(originalSource, changedSource, writer));
+                }
+
+                diffgram = sw.ToString();
+            }
+
+            XmlDocument mismatchedSource = new XmlDocument();
+            mismatchedSource.LoadXml("<a c='1'></a>");
+
+            XmlDocument diffgramDocument = new XmlDocument();
+            diffgramDocument.LoadXml(diffgram);
+
+            XmlPatch patch = new XmlPatch();
+            Assert.Throws<Exception>(() =>
+            {
+                using (var reader = new XmlNodeReader(diffgramDocument))
+                {
+                    patch.Patch(mismatchedSource, reader);
+                }
+            });
+
+            patch.IgnoreSrcValidation = true;
+            using (var reader = new XmlNodeReader(diffgramDocument))
+            {
+                patch.Patch(mismatchedSource, reader);
+            }
+
+            Assert.Equal("<a c=\"1\"><b /></a>", mismatchedSource.DocumentElement.OuterXml);
+        }
+
         private string ToComparibleString(XmlDocument doc)
         {
             // avoid comparing the hash.
