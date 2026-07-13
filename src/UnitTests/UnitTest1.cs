@@ -165,6 +165,250 @@ namespace UnitTests
             Assert.Equal("<a c=\"1\"><b /></a>", mismatchedSource.DocumentElement.OuterXml);
         }
 
+        [Fact]
+        public void PatchMixedContentRoundtripStillWorks()
+        {
+            // reordering text and inline element patches cleanly when applied to the original source
+            var patched = DiffAndPatch(
+                "<p><b>bold</b>Text</p>",
+                "<p>Text<b>bold</b></p>",
+                "<p><b>bold</b>Text</p>",
+                XmlDiffOptions.None);
+
+            Assert.Equal("<p>Text<b>bold</b></p>", patched);
+        }
+
+        [Fact]
+        public void PatchDescendingIntoLeafNodeFailsWithDescriptiveError()
+        {
+            // Diffgram generated for <p>Text<b>bold</b></p>, where <b> is child 2.
+            // In the patched document the inline element comes first, so the positional
+            // match="2" resolves to the text node. With IgnoreChildOrder the srcDocHash
+            // is order-independent and does not catch this.
+            var ex = Assert.Throws<Exception>(() => DiffAndPatch(
+                "<p>Text<b>bold</b></p>",
+                "<p>Text<b>fett</b></p>",
+                "<p><b>bold</b>Text</p>",
+                XmlDiffOptions.IgnoreChildOrder));
+
+            Assert.Contains("cannot contain children", ex.Message);
+        }
+
+        [Fact]
+        public void PatchTextChangeHittingElementFailsInsteadOfSilentNoOp()
+        {
+            // The text-value change targets child 1, which is the <b> element in the
+            // patched document. Previously this was silently ignored.
+            var ex = Assert.Throws<Exception>(() => DiffAndPatch(
+                "<p>Text<b>bold</b></p>",
+                "<p>Other<b>bold</b></p>",
+                "<p><b>bold</b>Text</p>",
+                XmlDiffOptions.IgnoreChildOrder));
+
+            Assert.Contains("does not fit the matched Element node", ex.Message);
+        }
+
+        [Fact]
+        public void PatchRenameChangeHittingTextNodeFailsInsteadOfCorruptingValue()
+        {
+            // Hand-crafted diffgram: an element rename targeting child 1, which is a text
+            // node in the patched document. Previously the text value was overwritten with
+            // the change operation's (empty) content.
+            string diffgram = "<xd:xmldiff version=\"1.0\" options=\"None\" fragments=\"no\"" +
+                " xmlns:xd=\"http://schemas.microsoft.com/xmltools/2002/xmldiff\">" +
+                "<xd:node match=\"1\"><xd:change match=\"1\" name=\"i\" /></xd:node></xd:xmldiff>";
+
+            XmlDocument patchDoc = new XmlDocument();
+            patchDoc.LoadXml("<p>Text<b>bold</b></p>");
+
+            XmlPatch patch = new XmlPatch() { IgnoreSrcValidation = true };
+            var ex = Assert.Throws<Exception>(() =>
+            {
+                using (var reader = XmlReader.Create(new StringReader(diffgram)))
+                {
+                    patch.Patch(patchDoc, reader);
+                }
+            });
+
+            Assert.Contains("does not fit the matched Text node", ex.Message);
+        }
+
+        [Fact]
+        public void MatchValidationRoundtripPatchesCleanly()
+        {
+            // the emitted matchType/matchName/matchHash attributes must not disturb a
+            // legitimate patch, and the diff-side node hashes must equal the hashes
+            // recomputed from the DOM on the patch side
+            string diffgram = Diff(
+                "<p><b>bold</b>Text</p>",
+                "<p>Text<b>fett</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            Assert.Contains("matchHash", diffgram);
+
+            var patched = ApplyPatch(diffgram, "<p><b>bold</b>Text</p>");
+            Assert.Equal("<p>Text<b>fett</b></p>", patched);
+        }
+
+        [Fact]
+        public void MatchValidationDetectsRemovalOfWrongNode()
+        {
+            // The removal targets child 3, which is <i> in the diff source but <b> in the
+            // patched document. Without match metadata the wrong element is silently removed;
+            // srcDocHash does not catch it because it is order-independent under IgnoreChildOrder.
+            string diffgram = Diff(
+                "<p>Text<b>bold</b><i>x</i></p>",
+                "<p>Text<b>bold</b></p>",
+                XmlDiffOptions.IgnoreChildOrder,
+                emitMatchValidation: true);
+
+            var ex = Assert.Throws<Exception>(() => ApplyPatch(diffgram, "<p><i>x</i>Text<b>bold</b></p>"));
+
+            Assert.Contains("named", ex.Message);
+        }
+
+        [Fact]
+        public void MatchValidationDetectsContentDrift()
+        {
+            // Both documents contain the same two <f> elements, only in swapped order, so the
+            // order-independent srcDocHash under IgnoreChildOrder passes. The positional match
+            // then hits the wrong same-named element; only the node content hash catches this.
+            string diffgram = Diff(
+                "<r><f>A</f><f>B</f></r>",
+                "<r><f>C</f><f>B</f></r>",
+                XmlDiffOptions.IgnoreChildOrder,
+                emitMatchValidation: true);
+
+            var ex = Assert.Throws<Exception>(() => ApplyPatch(diffgram, "<r><f>B</f><f>A</f></r>"));
+
+            Assert.Contains("differs from the corresponding", ex.Message);
+        }
+
+        [Fact]
+        public void MatchValidationWithIgnoreSrcValidationSkipsHashButKeepsTypeAndName()
+        {
+            // IgnoreSrcValidation declares that the documents may differ in content, so the
+            // node hash is not enforced - but node type and name still are
+            string diffgram = Diff("<a></a>", "<a><b/></a>", XmlDiffOptions.None, emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<a c='1'></a>", ignoreSrcValidation: true);
+            Assert.Equal("<a c=\"1\"><b /></a>", patched);
+
+            var ex = Assert.Throws<Exception>(() => ApplyPatch(diffgram, "<x></x>", ignoreSrcValidation: true));
+            Assert.Contains("named", ex.Message);
+        }
+
+        [Fact]
+        public void ReanchoringPatchesReorderedMixedContent()
+        {
+            // The diffgram changes the text inside <b>, addressed as child 2. In the patched
+            // document <b> is child 1; re-anchoring locates it by its content hash and the
+            // nested change applies inside the re-anchored element.
+            string diffgram = Diff(
+                "<p>Text<b>bold</b></p>",
+                "<p>Text<b>fett</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p><b>bold</b>Text</p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p><b>fett</b>Text</p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringRemovesCorrectNode()
+        {
+            // The removal targets child 3, which is <b> in the patched document; re-anchoring
+            // redirects it to the <i> element the diffgram was generated for. The srcDocHash
+            // passes because it is order-independent under IgnoreChildOrder.
+            string diffgram = Diff(
+                "<p>Text<b>bold</b><i>x</i></p>",
+                "<p>Text<b>bold</b></p>",
+                XmlDiffOptions.IgnoreChildOrder,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p><i>x</i>Text<b>bold</b></p>",
+                enableReanchoring: true);
+
+            Assert.Equal("<p>Text<b>bold</b></p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringFixesSameNameSiblingSwap()
+        {
+            // Both <f> elements have the same name and type; only the content hash can tell
+            // them apart. The change A -> C must follow the A-node to its new position.
+            string diffgram = Diff(
+                "<r><f>A</f><f>B</f></r>",
+                "<r><f>C</f><f>B</f></r>",
+                XmlDiffOptions.IgnoreChildOrder,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<r><f>B</f><f>A</f></r>",
+                enableReanchoring: true);
+
+            Assert.Equal("<r><f>B</f><f>C</f></r>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringFallsBackToValidationWhenNoCandidateExists()
+        {
+            // The expected <b> element does not exist anywhere in the patched document, so
+            // re-anchoring finds no candidate and the Stage 2 validation reports the mismatch.
+            string diffgram = Diff(
+                "<p>Text<b>bold</b></p>",
+                "<p>Text<b>fett</b></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var ex = Assert.Throws<Exception>(() => ApplyPatch(diffgram, "<p>Other<i>x</i></p>",
+                ignoreSrcValidation: true, enableReanchoring: true));
+
+            Assert.Contains("named", ex.Message);
+        }
+
+        private string Diff(string diffSource, string diffTarget, XmlDiffOptions options, bool emitMatchValidation = false)
+        {
+            XmlDocument sourceDoc = new XmlDocument();
+            sourceDoc.LoadXml(diffSource);
+            XmlDocument targetDoc = new XmlDocument();
+            targetDoc.LoadXml(diffTarget);
+
+            XmlDiff diff = new XmlDiff(options) { EmitMatchValidation = emitMatchValidation };
+            var settings = new XmlWriterSettings() { OmitXmlDeclaration = true, Indent = false };
+            using (var sw = new StringWriter())
+            {
+                using (var writer = XmlWriter.Create(sw, settings))
+                {
+                    diff.Compare(sourceDoc, targetDoc, writer);
+                }
+                return sw.ToString();
+            }
+        }
+
+        private string ApplyPatch(string diffgram, string patchSource, bool ignoreSrcValidation = false, bool enableReanchoring = false)
+        {
+            XmlDocument patchDoc = new XmlDocument();
+            patchDoc.LoadXml(patchSource);
+            XmlPatch patch = new XmlPatch()
+            {
+                IgnoreSrcValidation = ignoreSrcValidation,
+                EnableMatchReanchoring = enableReanchoring
+            };
+            using (var reader = XmlReader.Create(new StringReader(diffgram)))
+            {
+                patch.Patch(patchDoc, reader);
+            }
+            return patchDoc.DocumentElement.OuterXml;
+        }
+
+        private string DiffAndPatch(string diffSource, string diffTarget, string patchSource, XmlDiffOptions options)
+        {
+            return ApplyPatch(Diff(diffSource, diffTarget, options), patchSource);
+        }
+
         private string ToComparibleString(XmlDocument doc)
         {
             // avoid comparing the hash.

@@ -26,6 +26,9 @@ public class XmlPatch
     XmlNode _sourceRootNode;
     bool   _ignoreChildOrder;
     bool   _ignoreSrcValidation;
+    bool   _enableMatchReanchoring;
+    XmlDiffOptions _diffgramOptions;
+    XmlHash _matchValidationHash;
 
     /// <summary>
     /// Construct empty XmlPatch object.
@@ -41,6 +44,20 @@ public class XmlPatch
     {
         get { return _ignoreSrcValidation; }
         set { _ignoreSrcValidation = value; }
+    }
+
+    /// <summary>
+    ///    If true and the diffgram carries match validation data (see XmlDiff.EmitMatchValidation),
+    ///    a positional match path that resolves to a different node than the one the diffgram was
+    ///    generated for is re-anchored: the patcher searches the siblings for the node with the
+    ///    expected content and applies the operation there. This allows a diffgram to be applied
+    ///    to a document whose child order differs from the original source document (typical for
+    ///    mixed content). Has no effect on diffgrams without match validation data.
+    /// </summary>
+    public bool EnableMatchReanchoring
+    {
+        get { return _enableMatchReanchoring; }
+        set { _enableMatchReanchoring = value; }
     }
 
 // Methods
@@ -216,6 +233,7 @@ public class XmlPatch
         }
         
         _ignoreChildOrder = ( (int)xmlDiffOptions & (int)XmlDiffOptions.IgnoreChildOrder ) != 0;
+        _diffgramOptions = xmlDiffOptions;
 
         if ( !_ignoreSrcValidation )
         {
@@ -355,9 +373,11 @@ public class XmlPatch
             if ( matchAttr != string.Empty )
             {
                 matchNodes = PathDescriptorParser.SelectNodes( _sourceRootNode, sourceParent, matchAttr );
-                
+
                 if ( matchNodes.Count == 0 )
                     XmlPatchError.Error( XmlPatchError.NoMatchingNode, matchAttr );
+
+                matchNodes = ResolveAndValidateMatch( matchNodes, diffOp, matchAttr );
             }
 
             XmlPatchOperation patchOp = null;
@@ -375,6 +395,7 @@ public class XmlPatch
 
                     if ( _sourceRootNode.NodeType != XmlNodeType.Document ||
                          ( matchNode.NodeType != XmlNodeType.XmlDeclaration && matchNode.NodeType != XmlNodeType.DocumentType ) ) {
+                        ValidateMatchNodeCanHostChildOperations( matchNode, diffOp, matchAttr );
                         patchOp = new PatchSetPosition( matchNode );
                         CreatePatchForChildren( matchNode, diffOp, (XmlPatchParentOperation) patchOp );
                     }
@@ -437,6 +458,7 @@ public class XmlPatch
                     if ( !bSubtree )
                     {
                         Debug.Assert( matchNodes.Count == 1 );
+                        ValidateMatchNodeCanHostChildOperations( matchNodes.Item(0), diffOp, matchAttr );
                         CreatePatchForChildren( matchNodes.Item(0), diffOp, (XmlPatchParentOperation) patchOp );
                     }
 
@@ -449,8 +471,9 @@ public class XmlPatch
                         XmlPatchError.Error( XmlPatchError.MoreThanOneNodeMatched, matchAttr );
 
                     XmlNode matchNode = matchNodes.Item( 0 );
+                    ValidateChangeMatchNodeType( matchNode, diffOp, matchAttr );
                     if ( matchNode.NodeType != XmlNodeType.DocumentType ) {
-                        patchOp = new PatchChange( matchNode, 
+                        patchOp = new PatchChange( matchNode,
                                                 diffOp.HasAttribute( "name" ) ? diffOp.GetAttribute( "name" ) : null,
                                                 diffOp.HasAttribute( "ns" ) ? diffOp.GetAttribute( "ns" ) : null, 
                                                 diffOp.HasAttribute( "prefix" ) ? diffOp.GetAttribute( "prefix" ) : null, 
@@ -481,6 +504,214 @@ public class XmlPatch
                 lastPatchOp = patchOp;
             }
             node = node.NextSibling;
+        }
+    }
+
+    // Resolves a positional match against the matchHash metadata: when re-anchoring is enabled
+    // and the node at the matched position does not have the expected content hash, the operation
+    // is re-anchored to the sibling that does. When no such sibling exists, the match falls
+    // through to the plain validation and fails there (or is tolerated under IgnoreSrcValidation).
+    private XmlNodeList ResolveAndValidateMatch( XmlNodeList matchNodes, XmlElement diffOp, string matchAttr )
+    {
+        if ( _enableMatchReanchoring && matchNodes.Count == 1 )
+        {
+            string expectedHashStr = diffOp.GetAttribute( "matchHash" );
+            ulong expectedHash;
+            if ( expectedHashStr != string.Empty && ulong.TryParse( expectedHashStr, out expectedHash ) )
+            {
+                if ( _matchValidationHash == null )
+                    _matchValidationHash = new XmlHash();
+
+                XmlNode matchNode = matchNodes.Item( 0 );
+                if ( _matchValidationHash.ComputeHash( matchNode, _diffgramOptions ) == expectedHash )
+                    return matchNodes;   // hash matches -> type and name are implicitly verified
+
+                XmlNode reanchoredNode = FindNodeByHash( matchNode, expectedHash );
+                if ( reanchoredNode != null )
+                {
+                    XmlPatchNodeList reanchoredList = new SingleNodeList();
+                    reanchoredList.AddNode( reanchoredNode );
+                    return reanchoredList;
+                }
+            }
+        }
+
+        ValidateMatchMetadata( matchNodes, diffOp, matchAttr );
+        return matchNodes;
+    }
+
+    // Scans the siblings of the mismatched node for the node whose content hash equals the
+    // hash recorded in the diffgram. When several identical candidates exist, the one closest
+    // to the original position is used - identical hashes mean identical content, so the
+    // outcome is equivalent. Returns null when no sibling matches.
+    private XmlNode FindNodeByHash( XmlNode mismatchedNode, ulong expectedHash )
+    {
+        XmlNode parent = mismatchedNode.ParentNode;
+        if ( parent == null )
+            return null;
+
+        int originalIndex = 0;
+        int index = 0;
+        XmlNode child = parent.FirstChild;
+        while ( child != null )
+        {
+            if ( child == mismatchedNode )
+            {
+                originalIndex = index;
+                break;
+            }
+            index++;
+            child = child.NextSibling;
+        }
+
+        XmlNode bestNode = null;
+        int bestDistance = int.MaxValue;
+        index = 0;
+        child = parent.FirstChild;
+        while ( child != null )
+        {
+            if ( child != mismatchedNode &&
+                 _matchValidationHash.ComputeHash( child, _diffgramOptions ) == expectedHash )
+            {
+                int distance = ( index > originalIndex ) ? index - originalIndex : originalIndex - index;
+                if ( distance < bestDistance )
+                {
+                    bestDistance = distance;
+                    bestNode = child;
+                }
+            }
+            index++;
+            child = child.NextSibling;
+        }
+        return bestNode;
+    }
+
+    // Verifies the matched node(s) against the matchType/matchName/matchHash attributes that
+    // XmlDiff emits when EmitMatchValidation is enabled. The match path descriptors are positional,
+    // so this is what detects a diffgram being applied to a document whose child order differs
+    // from the document the diffgram was generated for. The content hash is not checked when
+    // IgnoreSrcValidation is set - the caller has declared that the documents may differ in
+    // content - but node type and name are still verified.
+    private void ValidateMatchMetadata( XmlNodeList matchNodes, XmlElement diffOp, string matchAttr )
+    {
+        string expectedTypeStr = diffOp.GetAttribute( "matchType" );
+        if ( expectedTypeStr != string.Empty && matchNodes.Count == 1 )
+        {
+            XmlNode matchNode = matchNodes.Item( 0 );
+
+            int expectedType;
+            if ( int.TryParse( expectedTypeStr, out expectedType ) && (int)matchNode.NodeType != expectedType )
+                XmlPatchError.Error( XmlPatchError.MatchNodeTypeMismatch, matchAttr,
+                                     matchNode.NodeType.ToString(), ((XmlNodeType)expectedType).ToString() );
+
+            string expectedName = diffOp.GetAttribute( "matchName" );
+            if ( expectedName != string.Empty )
+            {
+                string actualName = ( matchNode.NodeType == XmlNodeType.Element ) ? matchNode.LocalName : matchNode.Name;
+                if ( actualName != expectedName )
+                    XmlPatchError.Error( XmlPatchError.MatchNodeNameMismatch, matchAttr, actualName, expectedName );
+            }
+        }
+
+        if ( !_ignoreSrcValidation )
+        {
+            string expectedHashStr = diffOp.GetAttribute( "matchHash" );
+            ulong expectedHash;
+            if ( expectedHashStr != string.Empty && ulong.TryParse( expectedHashStr, out expectedHash ) )
+            {
+                if ( _matchValidationHash == null )
+                    _matchValidationHash = new XmlHash();
+
+                ulong actualHash = 0;
+                for ( int i = 0; i < matchNodes.Count; i++ )
+                    actualHash += _matchValidationHash.ComputeHash( matchNodes.Item( i ), _diffgramOptions );
+
+                if ( actualHash != expectedHash )
+                    XmlPatchError.Error( XmlPatchError.MatchNodeContentMismatch, matchAttr );
+            }
+        }
+    }
+
+    private static bool HasChildOperations( XmlElement diffOp )
+    {
+        XmlNode child = diffOp.FirstChild;
+        while ( child != null ) {
+            if ( child.NodeType == XmlNodeType.Element )
+                return true;
+            child = child.NextSibling;
+        }
+        return false;
+    }
+
+    // The match paths in a diffgram are positional; when the document being patched does not have
+    // the same child order as the document the diffgram was generated for (typical for mixed content),
+    // a path can silently resolve to a node of a different type. Descending into a node that cannot
+    // have children would otherwise surface as a misleading NoMatchingNode error deeper in the tree.
+    private static void ValidateMatchNodeCanHostChildOperations( XmlNode matchNode, XmlElement diffOp, string matchAttr )
+    {
+        if ( !HasChildOperations( diffOp ) )
+            return;
+
+        switch ( matchNode.NodeType ) {
+            case XmlNodeType.Text:
+            case XmlNodeType.CDATA:
+            case XmlNodeType.Comment:
+            case XmlNodeType.Whitespace:
+            case XmlNodeType.SignificantWhitespace:
+            case XmlNodeType.ProcessingInstruction:
+            case XmlNodeType.XmlDeclaration:
+            case XmlNodeType.DocumentType:
+                XmlPatchError.Error( XmlPatchError.ChildOperationsOnLeafNode, matchAttr, matchNode.NodeType.ToString() );
+                break;
+        }
+    }
+
+    // Verifies that the payload of an xd:change operation fits the type of the matched node.
+    // A mismatch (e.g. a text-value change resolving to an element) would otherwise be applied
+    // to the wrong node or silently do nothing.
+    private static void ValidateChangeMatchNodeType( XmlNode matchNode, XmlElement diffOp, string matchAttr )
+    {
+        bool hasNameAttributes = diffOp.HasAttribute( "name" ) || diffOp.HasAttribute( "ns" ) || diffOp.HasAttribute( "prefix" );
+        XmlNode payload = diffOp.FirstChild;
+
+        switch ( matchNode.NodeType )
+        {
+            case XmlNodeType.Element:
+                // element changes are renames (name/ns/prefix) with nested child operations;
+                // a character data payload without rename attributes was generated for a non-element node
+                if ( !hasNameAttributes && payload != null &&
+                     ( payload.NodeType == XmlNodeType.Text ||
+                       payload.NodeType == XmlNodeType.CDATA ||
+                       payload.NodeType == XmlNodeType.Comment ||
+                       payload.NodeType == XmlNodeType.ProcessingInstruction ) )
+                    XmlPatchError.Error( XmlPatchError.ChangeTypeMismatch, matchAttr, matchNode.NodeType.ToString() );
+                break;
+
+            case XmlNodeType.Text:
+            case XmlNodeType.CDATA:
+            case XmlNodeType.Whitespace:
+            case XmlNodeType.SignificantWhitespace:
+                // value changes carry the new text as plain content and no rename attributes
+                if ( hasNameAttributes ||
+                     ( payload != null &&
+                       ( payload.NodeType == XmlNodeType.Comment ||
+                         payload.NodeType == XmlNodeType.ProcessingInstruction ||
+                         payload.NodeType == XmlNodeType.Element ) ) )
+                    XmlPatchError.Error( XmlPatchError.ChangeTypeMismatch, matchAttr, matchNode.NodeType.ToString() );
+                break;
+
+            case XmlNodeType.Comment:
+                // comment changes carry the new value as a comment node
+                if ( hasNameAttributes || payload == null || payload.NodeType != XmlNodeType.Comment )
+                    XmlPatchError.Error( XmlPatchError.ChangeTypeMismatch, matchAttr, matchNode.NodeType.ToString() );
+                break;
+
+            case XmlNodeType.ProcessingInstruction:
+                // PI changes carry either a name attribute (rename) or the new PI as payload
+                if ( !diffOp.HasAttribute( "name" ) &&
+                     ( payload == null || payload.NodeType != XmlNodeType.ProcessingInstruction ) )
+                    XmlPatchError.Error( XmlPatchError.ChangeTypeMismatch, matchAttr, matchNode.NodeType.ToString() );
+                break;
         }
     }
 }

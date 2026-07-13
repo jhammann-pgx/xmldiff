@@ -196,6 +196,7 @@ public class XmlDiff
     bool _bIgnorePrefixes    = false;
     bool _bIgnoreXmlDecl     = false;
     bool _bIgnoreDtd         = false;
+    bool _bEmitMatchValidation = false;
 
     XmlDiffAlgorithm _algorithm = XmlDiffAlgorithm.Auto;
 
@@ -301,6 +302,16 @@ public class XmlDiff
     ///    If true, the xml declarations will not be compared.
     /// </summary>
     public bool IgnoreDtd        { get { return _bIgnoreDtd;        } set { _bIgnoreDtd = value; } }
+
+    /// <summary>
+    ///    If true, the generated diffgram carries additional matchType, matchName and matchHash
+    ///    attributes on each operation that refers to a node by its position. XmlPatch uses them
+    ///    to verify that each positional match path resolves to the intended node and fails with
+    ///    a descriptive error instead of patching a wrong node when the document being patched
+    ///    does not correspond to the document the diffgram was generated for. Diffgrams with
+    ///    these attributes remain compatible with older patchers, which ignore them.
+    /// </summary>
+    public bool EmitMatchValidation { get { return _bEmitMatchValidation; } set { _bEmitMatchValidation = value; } }
 
     /// <summary>
     ///    Options used when comparing xml documents/fragments.
