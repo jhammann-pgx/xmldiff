@@ -21,6 +21,9 @@ internal abstract class DiffgramOperation
     internal DiffgramOperation _nextSiblingOp;
     protected ulong _operationID;
     internal DiffgramOperation _parent;
+    // set for add operations whose target nodes belong to the contiguous group of added
+    // content at the end of the target parent's child list; see MarkTrailingAddsAnchorLast
+    internal bool _bAnchorLast;
 
 	internal DiffgramOperation( ulong operationID )
 	{
@@ -293,12 +296,116 @@ internal abstract class DiffgramParentOperation : DiffgramOperation
 
     internal void WriteChildrenTo( XmlWriter xmlWriter, XmlDiff xmlDiff )
     {
+        if ( xmlDiff.EmitMatchValidation )
+            MarkTrailingAddsAnchorLast();
+
         DiffgramOperation curOp = _firstChildOp;
         while ( curOp != null )
         {
             curOp.WriteTo( xmlWriter, xmlDiff );
             curOp = curOp._nextSiblingOp;
         }
+    }
+
+    // Marks the contiguous group of add operations at the end of the child operation list whose
+    // target nodes end the child list of the target parent. A re-anchoring patcher appends these
+    // adds at the end of the parent instead of placing them after the previous operation's node,
+    // whose position may differ in the document being patched.
+    private void MarkTrailingAddsAnchorLast()
+    {
+        int count = 0;
+        DiffgramOperation curOp = _firstChildOp;
+        while ( curOp != null )
+        {
+            count++;
+            curOp = curOp._nextSiblingOp;
+        }
+        if ( count == 0 )
+            return;
+
+        DiffgramOperation[] ops = new DiffgramOperation[ count ];
+        curOp = _firstChildOp;
+        for ( int i = 0; i < count; i++ )
+        {
+            ops[i] = curOp;
+            curOp = curOp._nextSiblingOp;
+        }
+
+        // walk backwards; the group must be contiguous in the target tree and its last
+        // node must be the last child of the target parent (expectedNextTargetNode == null)
+        XmlDiffNode expectedNextTargetNode = null;
+        for ( int i = count - 1; i >= 0; i-- )
+        {
+            XmlDiffNode firstTargetNode, lastTargetNode;
+            if ( TryGetAddTargetInterval( ops[i], out firstTargetNode, out lastTargetNode ) )
+            {
+                if ( lastTargetNode._nextSibling != expectedNextTargetNode )
+                    break;
+                ops[i]._bAnchorLast = true;
+                expectedNextTargetNode = firstTargetNode;
+            }
+            else if ( !IsTargetPositionNeutral( ops[i] ) )
+            {
+                break;
+            }
+        }
+    }
+
+    // Returns the interval of target-tree nodes an add operation will produce, if determinable.
+    private static bool TryGetAddTargetInterval( DiffgramOperation op, out XmlDiffNode firstTargetNode, out XmlDiffNode lastTargetNode )
+    {
+        DiffgramAddSubtrees addSubtrees = op as DiffgramAddSubtrees;
+        if ( addSubtrees != null )
+        {
+            addSubtrees.GetTargetInterval( out firstTargetNode, out lastTargetNode );
+            return true;
+        }
+
+        DiffgramAddNode addNode = op as DiffgramAddNode;
+        if ( addNode != null &&
+             addNode._targetNode.NodeType != XmlDiffNodeType.Attribute &&
+             addNode._targetNode.NodeType != XmlDiffNodeType.Namespace )
+        {
+            firstTargetNode = addNode._targetNode;
+            lastTargetNode = addNode._targetNode;
+            return true;
+        }
+
+        DiffgramCopy copy = op as DiffgramCopy;
+        if ( copy != null )
+        {
+            XmlDiffShrankNode shrankNode = copy._sourceNode as XmlDiffShrankNode;
+            if ( shrankNode != null && shrankNode.MatchingShrankNode != null )
+            {
+                firstTargetNode = shrankNode.MatchingShrankNode._firstNode;
+                lastTargetNode = shrankNode.MatchingShrankNode._lastNode;
+                return true;
+            }
+        }
+
+        firstTargetNode = null;
+        lastTargetNode = null;
+        return false;
+    }
+
+    // Operations that do not occupy a position among the target parent's children and therefore
+    // do not interrupt a trailing group of adds: removes and attribute/namespace operations.
+    private static bool IsTargetPositionNeutral( DiffgramOperation op )
+    {
+        if ( op is DiffgramRemoveNode || op is DiffgramRemoveSubtrees || op is DiffgramRemoveAttributes )
+            return true;
+
+        DiffgramAddNode addNode = op as DiffgramAddNode;
+        if ( addNode != null &&
+             ( addNode._targetNode.NodeType == XmlDiffNodeType.Attribute ||
+               addNode._targetNode.NodeType == XmlDiffNodeType.Namespace ) )
+            return true;
+
+        DiffgramChangeNode changeNode = op as DiffgramChangeNode;
+        if ( changeNode != null && changeNode._sourceNode is XmlDiffAttributeOrNamespace )
+            return true;
+
+        return false;
     }
 
 	internal bool MergeRemoveSubtreeAtBeginning( XmlDiffNode subtreeRoot )
@@ -359,7 +466,7 @@ internal abstract class DiffgramParentOperation : DiffgramOperation
 internal class DiffgramAddNode : DiffgramParentOperation
 {
 // Fields
-    XmlDiffNode _targetNode;
+    internal XmlDiffNode _targetNode;
 
 // Constructor
     internal DiffgramAddNode( XmlDiffNode targetNode, ulong operationID ) : base ( operationID )
@@ -386,6 +493,11 @@ internal class DiffgramAddNode : DiffgramParentOperation
     internal override void WriteTo( XmlWriter xmlWriter, XmlDiff xmlDiff )
     {
         xmlWriter.WriteStartElement( XmlDiff.Prefix, "add", XmlDiff.NamespaceUri );
+
+        // set by MarkTrailingAddsAnchorLast when this add belongs to the contiguous group of
+        // added content at the end of the target parent's child list
+        if ( xmlDiff.EmitMatchValidation && _bAnchorLast )
+            xmlWriter.WriteAttributeString( "anchorLast", "yes" );
 
         switch ( _targetNode.NodeType )
         {
@@ -577,6 +689,11 @@ internal class DiffgramAddSubtrees : DiffgramOperation
         if ( _operationID != 0 )
             xmlWriter.WriteAttributeString( "opid", _operationID.ToString() );
 
+        // set by MarkTrailingAddsAnchorLast when this add belongs to the contiguous group of
+        // added content at the end of the target parent's child list
+        if ( xmlDiff.EmitMatchValidation && _bAnchorLast )
+            xmlWriter.WriteAttributeString( "anchorLast", "yes" );
+
         // namespaces
         if ( _bNeedNamespaces ) {
             Hashtable definedPrefixes = new Hashtable(); 
@@ -618,6 +735,14 @@ internal class DiffgramAddSubtrees : DiffgramOperation
         _bSorted = true;
     }
 
+    internal void GetTargetInterval( out XmlDiffNode firstTargetNode, out XmlDiffNode lastTargetNode )
+    {
+        if ( !_bSorted )
+            Sort();
+        firstTargetNode = _firstTargetNode;
+        lastTargetNode = _lastTargetNode;
+    }
+
 	internal bool SetNewFirstNode( XmlDiffNode targetNode )
 	{
 		if ( _operationID != 0 ||
@@ -657,7 +782,7 @@ internal class DiffgramAddSubtrees : DiffgramOperation
 internal class DiffgramCopy : DiffgramParentOperation
 {
 // Fields
-    XmlDiffNode _sourceNode;
+    internal XmlDiffNode _sourceNode;
     bool _bSubtree;
 
 // Constructor
@@ -685,6 +810,11 @@ internal class DiffgramCopy : DiffgramParentOperation
         if ( _operationID != 0 )
             xmlWriter.WriteAttributeString( "opid", _operationID.ToString() );
         WriteMatchValidationAttributes( _sourceNode, xmlWriter, xmlDiff );
+
+        // set by MarkTrailingAddsAnchorLast when this moved subtree belongs to the contiguous
+        // group of content at the end of the target parent's child list
+        if ( xmlDiff.EmitMatchValidation && _bAnchorLast )
+            xmlWriter.WriteAttributeString( "anchorLast", "yes" );
 
         WriteChildrenTo( xmlWriter, xmlDiff );
 

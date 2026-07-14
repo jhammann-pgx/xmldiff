@@ -24,6 +24,11 @@ internal abstract class XmlPatchOperation
 
 // Methods
     internal abstract void Apply( XmlNode parent, ref XmlNode currentPosition );
+
+    // Called by XmlPatch when a leading add operation should take the place of a following
+    // removed node instead of being inserted at the beginning of the parent (replacement
+    // semantics under match re-anchoring). No-op for operations that do not insert content.
+    internal virtual void SetLeadingInsertAnchor( XmlNode insertBeforeNode ) {}
 }
 
 //////////////////////////////////////////////////////////////////
@@ -99,15 +104,23 @@ internal class PatchCopy : XmlPatchParentOperation
 // Fields
     XmlNodeList _matchNodes;
     bool _bSubtree;
+    bool _bAnchorLast;
+    XmlNode _insertBeforeNode;
 
 // Constructor
-    internal PatchCopy( XmlNodeList matchNodes, bool bSubtree )
+    internal PatchCopy( XmlNodeList matchNodes, bool bSubtree, bool bAnchorLast )
     {
         Debug.Assert( matchNodes != null );
         Debug.Assert( matchNodes.Count != 0 );
 
         _matchNodes = matchNodes;
         _bSubtree = bSubtree;
+        _bAnchorLast = bAnchorLast;
+    }
+
+    internal override void SetLeadingInsertAnchor( XmlNode insertBeforeNode )
+    {
+        _insertBeforeNode = insertBeforeNode;
     }
 
 // Methods
@@ -129,7 +142,12 @@ internal class PatchCopy : XmlPatchParentOperation
                 ApplyChildren( newNode );
             }
 
-            parent.InsertAfter( newNode, currentPosition );
+            if ( _bAnchorLast )
+                parent.AppendChild( newNode );
+            else if ( currentPosition == null && _insertBeforeNode != null )
+                parent.InsertBefore( newNode, _insertBeforeNode );
+            else
+                parent.InsertAfter( newNode, currentPosition );
             currentPosition = newNode;
         }
     }
@@ -148,9 +166,11 @@ internal class PatchAddNode : XmlPatchParentOperation
     string _value;      // == internal subset if DocumentType node
 
     bool   _ignoreChildOrder;
+    bool   _bAnchorLast;
+    XmlNode _insertBeforeNode;
 
 // Constructor
-    internal PatchAddNode( XmlNodeType nodeType, string name, string ns, string prefix, string value, bool ignoreChildOrder )
+    internal PatchAddNode( XmlNodeType nodeType, string name, string ns, string prefix, string value, bool ignoreChildOrder, bool bAnchorLast )
     {
         Debug.Assert( (int)nodeType > 0 && (int)nodeType <= (int)XmlNodeType.XmlDeclaration );
 
@@ -161,6 +181,12 @@ internal class PatchAddNode : XmlPatchParentOperation
         _value = value;
 
         _ignoreChildOrder = ignoreChildOrder;
+        _bAnchorLast = bAnchorLast;
+    }
+
+    internal override void SetLeadingInsertAnchor( XmlNode insertBeforeNode )
+    {
+        _insertBeforeNode = insertBeforeNode;
     }
 
 // Methods
@@ -243,8 +269,11 @@ internal class PatchAddNode : XmlPatchParentOperation
 
 			Debug.Assert( currentPosition == null || currentPosition.NodeType != XmlNodeType.Attribute );
 
-            if ( _ignoreChildOrder ) {
+            if ( _ignoreChildOrder || _bAnchorLast ) {
                 parent.AppendChild( newNode );
+            }
+            else if ( currentPosition == null && _insertBeforeNode != null ) {
+                parent.InsertBefore( newNode, _insertBeforeNode );
             }
             else {
                 parent.InsertAfter( newNode, currentPosition );
@@ -261,12 +290,20 @@ internal class PatchAddXmlFragment : XmlPatchOperation
 {
 // Fields
     XmlNodeList _nodes;
+    bool _bAnchorLast;
+    XmlNode _insertBeforeNode;
 
 // Constructor
-    internal PatchAddXmlFragment( XmlNodeList nodes )
+    internal PatchAddXmlFragment( XmlNodeList nodes, bool bAnchorLast )
     {
         Debug.Assert( nodes != null );
         _nodes = nodes;
+        _bAnchorLast = bAnchorLast;
+    }
+
+    internal override void SetLeadingInsertAnchor( XmlNode insertBeforeNode )
+    {
+        _insertBeforeNode = insertBeforeNode;
     }
 
 // Methods
@@ -278,7 +315,12 @@ internal class PatchAddXmlFragment : XmlPatchOperation
         while ( enumerator.MoveNext() )
         {
             XmlNode newNode = doc.ImportNode( (XmlNode)enumerator.Current, true );
-            parent.InsertAfter( newNode, currentPosition );
+            if ( _bAnchorLast )
+                parent.AppendChild( newNode );
+            else if ( currentPosition == null && _insertBeforeNode != null )
+                parent.InsertBefore( newNode, _insertBeforeNode );
+            else
+                parent.InsertAfter( newNode, currentPosition );
             currentPosition = newNode;
         }
     }

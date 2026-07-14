@@ -9,6 +9,7 @@ using System.IO;
 using System.Xml;
 using System.Text;
 using System.Diagnostics;
+using System.Collections;
 using Microsoft.XmlDiffPatch;
 
 namespace Microsoft.XmlDiffPatch
@@ -27,6 +28,7 @@ public class XmlPatch
     bool   _ignoreChildOrder;
     bool   _ignoreSrcValidation;
     bool   _enableMatchReanchoring;
+    bool   _lastMatchReanchored;
     XmlDiffOptions _diffgramOptions;
     XmlHash _matchValidationHash;
 
@@ -358,6 +360,12 @@ public class XmlPatch
 
         XmlPatchOperation lastPatchOp = null;
 
+        // add operations before the first position-establishing operation would be inserted at
+        // the beginning of the parent; when the following remove was re-anchored, they should
+        // take the removed node's place instead (see the "remove" case below)
+        bool seenPositionOp = false;
+        ArrayList pendingLeadingAdds = null;
+
         XmlNode node = diffgramParent.FirstChild;
         while ( node != null )
         {
@@ -399,15 +407,23 @@ public class XmlPatch
                         patchOp = new PatchSetPosition( matchNode );
                         CreatePatchForChildren( matchNode, diffOp, (XmlPatchParentOperation) patchOp );
                     }
+
+                    seenPositionOp = true;
+                    pendingLeadingAdds = null;
                     break;
                 }
                 case "add":
                 {
+                    // with re-anchoring, adds marked as the trailing content of their target
+                    // parent are appended at the end instead of after the previous operation's
+                    // node, whose position may differ in the document being patched
+                    bool bAnchorLast = _enableMatchReanchoring && diffOp.GetAttribute( "anchorLast" ) == "yes";
+
                     // copy node/subtree
                     if ( matchAttr != string.Empty )
                     {
                         bool bSubtree = diffOp.GetAttribute( "subtree" ) != "no";
-                        patchOp = new PatchCopy( matchNodes, bSubtree );
+                        patchOp = new PatchCopy( matchNodes, bSubtree, bAnchorLast );
                         if ( !bSubtree )
                             CreatePatchForChildren( sourceParent, diffOp, (XmlPatchParentOperation) patchOp );
                     }
@@ -426,7 +442,8 @@ public class XmlPatch
                                                             diffOp.GetAttribute( "ns" ),
                                                             diffOp.GetAttribute( "prefix" ),
                                                             bElement ? string.Empty : diffOp.InnerText,
-                                                            _ignoreChildOrder );
+                                                            _ignoreChildOrder,
+                                                            bAnchorLast );
                                 if ( bElement )
                                     CreatePatchForChildren( sourceParent, diffOp, (XmlPatchParentOperation) patchOp );
                             }
@@ -436,15 +453,23 @@ public class XmlPatch
                                                             diffOp.GetAttribute( "systemId" ),
                                                             diffOp.GetAttribute( "publicId" ),
                                                             diffOp.InnerText,
-                                                            _ignoreChildOrder );
+                                                            _ignoreChildOrder,
+                                                            bAnchorLast );
                             }
                         }
                         // add blob
                         else
                         {
                             Debug.Assert( diffOp.ChildNodes.Count > 0 );
-                            patchOp = new PatchAddXmlFragment( diffOp.ChildNodes );
+                            patchOp = new PatchAddXmlFragment( diffOp.ChildNodes, bAnchorLast );
                         }
+                    }
+
+                    if ( _enableMatchReanchoring && !seenPositionOp && patchOp != null )
+                    {
+                        if ( pendingLeadingAdds == null )
+                            pendingLeadingAdds = new ArrayList();
+                        pendingLeadingAdds.Add( patchOp );
                     }
 
                     break;
@@ -455,6 +480,21 @@ public class XmlPatch
 
                     bool bSubtree = diffOp.GetAttribute( "subtree" ) != "no";
                     patchOp = new PatchRemove( matchNodes, bSubtree );
+
+                    if ( pendingLeadingAdds != null )
+                    {
+                        if ( _lastMatchReanchored )
+                        {
+                            // the removed node stands at a different position than the diffgram
+                            // recorded (typical for reordered mixed content); the leading adds
+                            // take its place instead of being inserted at the parent's beginning
+                            XmlNode insertBeforeNode = matchNodes.Item( 0 );
+                            for ( int i = 0; i < pendingLeadingAdds.Count; i++ )
+                                ((XmlPatchOperation)pendingLeadingAdds[i]).SetLeadingInsertAnchor( insertBeforeNode );
+                        }
+                        pendingLeadingAdds = null;
+                    }
+
                     if ( !bSubtree )
                     {
                         Debug.Assert( matchNodes.Count == 1 );
@@ -489,6 +529,12 @@ public class XmlPatch
 
                     if ( matchNode.NodeType == XmlNodeType.Element )
                         CreatePatchForChildren( matchNode, diffOp, (XmlPatchParentOperation) patchOp );
+
+                    if ( matchAttr[0] != '@' )
+                    {
+                        seenPositionOp = true;
+                        pendingLeadingAdds = null;
+                    }
                     break;
                 }
                 case "descriptor":
@@ -513,6 +559,8 @@ public class XmlPatch
     // through to the plain validation and fails there (or is tolerated under IgnoreSrcValidation).
     private XmlNodeList ResolveAndValidateMatch( XmlNodeList matchNodes, XmlElement diffOp, string matchAttr )
     {
+        _lastMatchReanchored = false;
+
         if ( _enableMatchReanchoring && matchNodes.Count == 1 )
         {
             string expectedHashStr = diffOp.GetAttribute( "matchHash" );
@@ -540,6 +588,7 @@ public class XmlPatch
 
                 if ( reanchoredNode != null )
                 {
+                    _lastMatchReanchored = true;
                     XmlPatchNodeList reanchoredList = new SingleNodeList();
                     reanchoredList.AddNode( reanchoredNode );
                     return reanchoredList;

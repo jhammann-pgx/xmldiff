@@ -425,6 +425,86 @@ namespace UnitTests
         }
 
         [Fact]
+        public void ReanchoringAppendsNewLastChildAtParentEnd()
+        {
+            // Mirrors the bloXedia pre-translation case: the added element is the last child in
+            // the diff target. In the translation document the graphic sits at the end instead
+            // of the front, so the relational anchor (the changed text node) would drop the new
+            // element into the middle; anchorLast keeps it at the end of the paragraph.
+            string diffgram = Diff(
+                "<p><g a='alt' />text alt</p>",
+                "<p><g a='neu' /> klicken zum testen <x>Test</x></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            Assert.Contains("anchorLast=\"yes\"", diffgram);
+
+            var patched = ApplyPatch(diffgram, "<p>uebersetzter text<g a='alt' /></p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p> klicken zum testen <g a=\"neu\" /><x>Test</x></p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringAppendsWholeTrailingGroupAtParentEnd()
+        {
+            // several new nodes (inline elements and text) follow the changed text in the diff
+            // target; the whole trailing group must end up at the paragraph end, in order
+            string diffgram = Diff(
+                "<p><g a='alt' />text alt</p>",
+                "<p><g a='neu' /> klicken zum testen <x>A</x>zwischen<y>B</y></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p>uebersetzter text<g a='alt' /></p>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Equal("<p> klicken zum testen <g a=\"neu\" /><x>A</x>zwischen<y>B</y></p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringDoesNotAppendAddsFollowedByExistingContent()
+        {
+            // the new node is inserted at the beginning of the target, before existing content -
+            // it must not be treated as trailing content and must stay at the front
+            string diffgram = Diff(
+                "<p><g>G</g></p>",
+                "<p><x>N</x><g>G</g></p>",
+                XmlDiffOptions.None,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(diffgram, "<p><g>G</g></p>",
+                enableReanchoring: true);
+
+            Assert.Equal("<p><x>N</x><g>G</g></p>", patched);
+        }
+
+        [Fact]
+        public void ReanchoringLeadingMoveTakesPlaceOfRemovedNode()
+        {
+            // Mirrors the bloXedia "Press" case: in the diff documents the graphic stands at the
+            // beginning of the paragraph, so the diffgram starts with a leading add (the moved-in
+            // graphic) followed by the remove of the old one. In the translation document the
+            // text comes first; the moved-in graphic must take the place of the removed graphic
+            // behind the text instead of being inserted at the paragraph beginning.
+            string g1 = "<g r='{id-1}' u='true' h='0' w='0'></g>";
+            string g2 = "<g r='{id-2}' u='true' h='0' w='0'></g>";
+
+            string diffgram = Diff(
+                "<Block><p k='2'>" + g1 + "Press something</p><p k='5'>Here is " + g1 + " and here is " + g2 + "</p></Block>",
+                "<Block><p k='2'>" + g2 + "Press something</p><p k='5'>Here is " + g2 + " and here is " + g1 + "</p></Block>",
+                XmlDiffOptions.IgnoreComments,
+                emitMatchValidation: true);
+
+            var patched = ApplyPatch(
+                diffgram,
+                "<Block><p k='2'>Press something" + g1 + "</p><p k='5'>Here is " + g1 + " and here is " + g2 + "</p></Block>",
+                ignoreSrcValidation: true, enableReanchoring: true);
+
+            Assert.Contains("<p k=\"2\">Press something<g r=\"{id-2}\"", patched);
+        }
+
+        [Fact]
         public void ReanchoringFallsBackToValidationWhenNoCandidateExists()
         {
             // The expected <b> element does not exist anywhere in the patched document, so
