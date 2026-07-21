@@ -4,6 +4,9 @@ Wie XmlDiff/XmlPatch Änderungen an Dokumenten mit Mixed Content überträgt —
 Diffgram auch dann noch angewendet werden kann, wenn das Zieldokument eine andere
 Knotenreihenfolge hat als das Dokument, aus dem das Diffgram erzeugt wurde.
 
+Grundlagen zum Diffgram-Format und den einzelnen Operationen:
+[DiffgramAndPatch.md](DiffgramAndPatch.md).
+
 ## Das Grundproblem
 
 Ein XDL-Diffgram adressiert Knoten **ausschließlich über ihre Position** im Elternknoten:
